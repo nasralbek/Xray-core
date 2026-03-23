@@ -3,14 +3,13 @@ package wireguard
 import (
 	"context"
 	"errors"
-	"net"
 	"net/netip"
 	"strconv"
 	"sync"
 
 	"golang.zx2c4.com/wireguard/conn"
 
-	xnet "github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/features/dns"
 	"github.com/xtls/xray-core/transport/internet"
 )
@@ -51,21 +50,21 @@ func (n *netBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 		return nil, err
 	}
 
-	addr := xnet.ParseAddress(ipStr)
-	if addr.Family() == xnet.AddressFamilyDomain {
+	addr := net.ParseAddress(ipStr)
+	if addr.Family() == net.AddressFamilyDomain {
 		ips, _, err := n.dns.LookupIP(addr.Domain(), n.dnsOption)
 		if err != nil {
 			return nil, err
 		} else if len(ips) == 0 {
 			return nil, dns.ErrEmptyResponse
 		}
-		addr = xnet.IPAddress(ips[0])
+		addr = net.IPAddress(ips[0])
 	}
 
-	dst := xnet.Destination{
+	dst := net.Destination{
 		Address: addr,
-		Port:    xnet.Port(portNum),
-		Network: xnet.Network_UDP,
+		Port:    net.Port(portNum),
+		Network: net.Network_UDP,
 	}
 
 	return &netEndpoint{
@@ -90,13 +89,14 @@ func (bind *netBind) Open(uport uint16) ([]conn.ReceiveFunc, uint16, error) {
 			}
 		}()
 
-		r := &netReadInfo{
-			buff: bufs[0],
+		r, ok := <-bind.readQueue
+		if !ok {
+			return 0, errors.New("channel closed")
 		}
-		r.waiter.Add(1)
-		bind.readQueue <- r
-		r.waiter.Wait() // wait read goroutine done, or we will miss the result
+
+		copy(bufs[0], r.buff[:r.bytes])
 		sizes[0], eps[0] = r.bytes, r.endpoint
+		r.waiter.Done()
 		return 1, r.err
 	}
 	workers := bind.workers
@@ -134,24 +134,29 @@ func (bind *netBindClient) connectTo(endpoint *netEndpoint) error {
 	}
 	endpoint.conn = c
 
-	go func(readQueue <-chan *netReadInfo, endpoint *netEndpoint) {
+	go func(readQueue chan<- *netReadInfo, endpoint *netEndpoint) {
+		defer func() {
+			_ = recover() // handle send on closed channel
+		}()
 		for {
-			v, ok := <-readQueue
-			if !ok {
-				return
-			}
-			i, err := c.Read(v.buff)
+			buff := make([]byte, 1700)
+			i, err := c.Read(buff)
 
 			if i > 3 {
-				v.buff[1] = 0
-				v.buff[2] = 0
-				v.buff[3] = 0
+				buff[1] = 0
+				buff[2] = 0
+				buff[3] = 0
 			}
 
-			v.bytes = i
-			v.endpoint = endpoint
-			v.err = err
-			v.waiter.Done()
+			r := &netReadInfo{
+				buff:     buff,
+				bytes:    i,
+				endpoint: endpoint,
+				err:      err,
+			}
+			r.waiter.Add(1)
+			readQueue <- r
+			r.waiter.Wait()
 			if err != nil {
 				endpoint.conn = nil
 				return
@@ -214,7 +219,7 @@ func (bind *netBindServer) Send(buff [][]byte, endpoint conn.Endpoint) error {
 }
 
 type netEndpoint struct {
-	dst  xnet.Destination
+	dst  net.Destination
 	conn net.Conn
 }
 
@@ -247,7 +252,7 @@ func (e netEndpoint) SrcToString() string {
 	return ""
 }
 
-func toNetIpAddr(addr xnet.Address) netip.Addr {
+func toNetIpAddr(addr net.Address) netip.Addr {
 	if addr.Family().IsIPv4() {
 		ip := addr.IP()
 		return netip.AddrFrom4([4]byte{ip[0], ip[1], ip[2], ip[3]})
