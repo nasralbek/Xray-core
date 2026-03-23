@@ -12,6 +12,11 @@ import (
 	"github.com/xtls/xray-core/features/routing"
 )
 
+const (
+	minHealthCheckInterval = 10 * time.Second
+	maxSamplingCount       = 100
+)
+
 // HealthPingSettings holds settings for health Checker
 type HealthPingSettings struct {
 	Destination   string        `json:"destination"`
@@ -63,12 +68,15 @@ func NewHealthPing(ctx context.Context, dispatcher routing.Dispatcher, config *H
 	}
 	if settings.Interval == 0 {
 		settings.Interval = time.Duration(1) * time.Minute
-	} else if settings.Interval < 10 {
+	} else if settings.Interval < minHealthCheckInterval {
 		errors.LogWarning(ctx, "health check interval is too small, 10s is applied")
-		settings.Interval = time.Duration(10) * time.Second
+		settings.Interval = minHealthCheckInterval
 	}
 	if settings.SamplingCount <= 0 {
 		settings.SamplingCount = 10
+	} else if settings.SamplingCount > maxSamplingCount {
+		errors.LogWarning(ctx, "health check sampling is too large, 100 is applied")
+		settings.SamplingCount = maxSamplingCount
 	}
 	if settings.Timeout <= 0 {
 		// results are saved after all health pings finish,

@@ -37,6 +37,18 @@ type Observer struct {
 	dispatcher routing.Dispatcher
 }
 
+const minProbeInterval = 10 * time.Second
+
+func normalizeProbeInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return minProbeInterval
+	}
+	if interval < minProbeInterval {
+		return minProbeInterval
+	}
+	return interval
+}
+
 func (o *Observer) GetObservation(ctx context.Context) (proto.Message, error) {
 	return &ObservationResult{Status: o.status}, nil
 }
@@ -72,10 +84,7 @@ func (o *Observer) background() {
 
 		o.updateStatus(outbounds)
 
-		sleepTime := time.Second * 10
-		if o.config.ProbeInterval != 0 {
-			sleepTime = time.Duration(o.config.ProbeInterval)
-		}
+		sleepTime := normalizeProbeInterval(time.Duration(o.config.ProbeInterval))
 
 		if !o.config.EnableConcurrency {
 			sort.Strings(outbounds)
